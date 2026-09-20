@@ -49,13 +49,17 @@ FG.Panels = (() => {
         <div class="info-grid">
           <div class="k">建筑数</div><div class="v">${game.totalBuildings()}</div>
           <div class="k">已研究</div><div class="v">${game.research.completed.size} / ${FG.Research.list().length}</div>
+          <div class="k">列车</div><div class="v">${game.railway.trains.length}</div>
           <div class="k">游戏时间</div><div class="v">${FG.Utils.fmtTime(game.playTime)}</div>
         </div>
         <div style="color:var(--text-dim);font-size:11px;margin-top:8px;line-height:1.6">
           点击地图上的建筑查看详情。<br>
           拖动右键平移视野，滚轮缩放。<br>
-          矿机→熔炉→组装机→科学包，最后发射卫星！
+          铺设轨道 → 放火车站与信号 → 在轨道上放列车 →<br>
+          选中列车设置运输计划，用机械臂在停站列车旁装卸货物。
         </div></div>`;
+    } else if (sel.type === 'train') {
+      html += trainInfo(sel);
     } else {
       html += buildingInfo(sel);
     }
@@ -176,12 +180,55 @@ FG.Panels = (() => {
       h += `</div>`;
     }
 
+    // 火车站：站名 + 停靠列车货厢
+    if (b.def.station) {
+      h += `<div class="panel-sec"><h4>火车站</h4>
+        <div class="info-grid">
+          <div class="k">站点编号</div><div class="v">${b.stationId || '-'}</div>
+        </div>
+        <label class="cfg-row" style="margin-top:4px">站名
+          <input type="text" id="station-name" value="${(b.stationName || '').replace(/"/g, '&quot;')}"
+            style="flex:1;margin-left:6px;background:#1a1f2a;border:1px solid #3a4150;color:var(--text);padding:2px 6px;border-radius:3px">
+        </label>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:4px;line-height:1.5">
+          列车停靠时，格内机械臂可直接向列车货厢<b>装货/卸货</b>（与箱子相同，支持筛选与按需）。</div></div>`;
+      const tr = FG.game.railway.dwellingTrainAt(b.x, b.y);
+      if (tr) {
+        h += `<div class="panel-sec"><h4>停靠列车 ${tr.id}（装卸中）</h4>`;
+        for (const s of tr.cargo) {
+          h += slotRow(s.type ? FG.Items.byId(s.type).name : '空', s);
+        }
+        h += `</div>`;
+      } else {
+        h += `<div class="panel-sec" style="color:var(--text-dim);font-size:11px">当前无列车停靠。</div>`;
+      }
+    }
+
+    // 铁路信号
+    if (b.def.signal) {
+      const a = FG.game.railway.signalAhead(b);
+      h += `<div class="panel-sec"><h4>铁路信号</h4>
+        <div class="info-grid"><div class="k">朝向</div><div class="v">${FG.Utils.dirName(b.dir)}</div>
+        <div class="k">灯色</div><div class="v" style="color:${!a.valid ? 'var(--text-dim)' : a.train ? 'var(--red)' : 'var(--green)'}">
+          ${!a.valid ? '无效（前方无轨道）' : a.train ? '红灯（前方分区占用）' : '绿灯'}</div></div>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:4px;line-height:1.5">
+          信号把它正对的轨道边切分为<b>闭塞分区</b>：分区被占用时红灯，列车在信号前等待，避免交叉线路撞车。R 旋转。</div></div>`;
+    }
+
+    // 轨道
+    if (b.def.rail) {
+      const deg = FG.game.map.railDegree(b.x, b.y);
+      h += `<div class="panel-sec" style="color:var(--text-dim);font-size:11px;line-height:1.6">
+        轨道连接度：<b style="color:var(--text)">${deg}</b>${deg >= 3 ? '（交叉/岔路节点，自动独立闭塞）' : deg === 1 ? '（尽头：列车到此断路）' : ''}<br>
+        按住轨道拖拽可连续铺设直线与转弯，十字交叉自动连通。</div>`;
+    }
+
     // 操作按钮
     h += `<div class="action-row">`;
-    if (b.def.beltTier !== undefined || b.def.inserterTier !== undefined) {
+    if (b.def.beltTier !== undefined || b.def.inserterTier !== undefined || b.def.rail || b.def.signal) {
       h += `<button id="btn-rotate">旋转</button>`;
     }
-    h += `<button id="btn-demolish" class="danger">拆除</button>
+    h += `<button id="btn-demolish" class="danger">${b.def.station ? '拆除车站' : '拆除'}</button>
       <button id="btn-clear">取消选择</button></div>`;
 
     return h;
@@ -191,6 +238,83 @@ FG.Panels = (() => {
     return `<div class="slot-row${warn ? ' slot-warn' : ''}" title="${warn ? '当前配方不再需要，机械臂会将其运走' : ''}"><span class="sl-name">${name}</span>
       <div class="sl-bar"><div class="fill" style="width:${Math.min(100, s.count / s.cap * 100).toFixed(0)}%"></div></div>
       <span class="sl-count">${FG.Utils.fmtNum(s.count)}/${FG.Utils.fmtNum(s.cap)}</span></div>`;
+  }
+
+  // ================= 列车（运输计划） =================
+  const TRAIN_STATUS_NAMES = {
+    working: '行驶中', blocked: '等待信号/堵站', idle: '无运输计划',
+    noPath: '断路停车', dwell: '停站装卸',
+  };
+  const ACTION_NAMES = { load: '装货', unload: '卸货', none: '仅停靠' };
+
+  function trainInfo(t) {
+    const game = FG.game;
+    const stations = game.railway.allStations();
+    const dest = t.destStationId ? game.railway.stationById(t.destStationId) : null;
+    let h = `<div class="panel-sec"><h4>🚃 列车 ${t.id}</h4>
+      <div class="info-grid">
+        <div class="k">状态</div><div class="v status-${t.status === 'working' ? 'working' : t.status === 'blocked' || t.status === 'noPath' ? 'blocked' : 'idle'}">
+          ${t.mode === 'dwell' ? '停站装卸' : (TRAIN_STATUS_NAMES[t.status] || t.status)}</div>
+        <div class="k">位置</div><div class="v">(${t.x}, ${t.y})</div>
+        <div class="k">目的站</div><div class="v">${dest ? dest.stationName : '—'}</div>
+        <div class="k">速度</div><div class="v">${(t.speed * FG.Config.TPS).toFixed(1)} 格/秒</div>
+      </div>
+      <div style="color:var(--text-dim);font-size:11px;margin-top:6px;line-height:1.5">
+        列车按下方运输计划循环运行：到站停靠后，格内机械臂自动装卸；
+        <b>装货</b>装满或 3 秒无变化发车，<b>卸货</b>卸空或 3 秒无变化发车。</div></div>`;
+
+    // 货厢
+    h += `<div class="panel-sec"><h4>货厢（${game.railway.cargoTotal(t)}/${FG.Config.TRAIN_SLOTS * FG.Config.TRAIN_SLOT_CAP}）</h4>`;
+    for (const s of t.cargo) h += slotRow(s.type ? FG.Items.byId(s.type).name : '空', s);
+    h += `</div>`;
+
+    // 运输计划
+    h += `<div class="panel-sec"><h4>运输计划（循环 ${t.schedule.length} 站）</h4>`;
+    if (!stations.length) {
+      h += `<div style="color:var(--red);font-size:11px">地图上还没有火车站：先在轨道旁放「火车站」建筑。</div>`;
+    }
+    if (!t.schedule.length) {
+      h += `<div style="color:var(--text-dim);font-size:11px;margin-bottom:4px">暂无停靠站，列车静止。用下方选择器添加站点：</div>`;
+    }
+    t.schedule.forEach((s, i) => {
+      const st = game.railway.stationById(s.stationId);
+      const isCur = t.mode === 'dwell' ? i === t.schedIndex : -1;
+      h += `<div class="bp-plan${isCur >= 0 ? '' : ''}" style="padding:5px 7px;margin-bottom:4px">
+        <div class="bp-head">
+          <span>${isCur >= 0 ? '🚉 ' : ''}${i + 1}. ${st ? st.stationName : '<span style="color:var(--red)">站点已拆除</span>'}</span>
+          <span class="plan-st ${s.action === 'load' ? 'st-active' : s.action === 'unload' ? 'st-waiting' : 'st-paused'}">${ACTION_NAMES[s.action]}</span>
+        </div>
+        <div class="prio-row plan-prio" style="margin:3px 0">
+          ${[['load', '装货'], ['unload', '卸货'], ['none', '停靠']].map(([a, nm]) =>
+            `<button class="prio-btn ${s.action === a ? 'active' : ''}" data-sched-act="${i}:${a}"
+              style="flex:1;padding:2px 0;font-size:11px">${nm}</button>`).join('')}
+        </div>
+        <div class="action-row" style="margin-top:2px">
+          <button data-sched-up="${i}" ${i === 0 ? 'disabled' : ''}>↑</button>
+          <button data-sched-down="${i}" ${i === t.schedule.length - 1 ? 'disabled' : ''}>↓</button>
+          <button data-sched-rm="${i}" class="danger">移除</button>
+        </div></div>`;
+    });
+    // 添加站点
+    const avail = stations.filter(st => !t.schedule.some(s => s.stationId === st.stationId));
+    if (avail.length) {
+      h += `<select id="sched-add-station" style="width:100%;margin-top:2px;background:#1a1f2a;border:1px solid #3a4150;color:var(--text);padding:3px;border-radius:3px">
+        <option value="">＋ 添加停靠站…</option>
+        ${avail.map(st => `<option value="${st.stationId}">${st.stationName}（${st.stationId}）</option>`).join('')}
+      </select>
+      <div class="prio-row plan-prio" style="margin:4px 0">
+        ${[['load', '装货'], ['unload', '卸货'], ['none', '停靠']].map(([a, nm]) =>
+          `<button class="prio-btn ${a === 'load' ? 'active' : ''}" data-sched-add-act="${a}"
+            style="flex:1;padding:2px 0;font-size:11px">${nm}</button>`).join('')}
+      </div>`;
+    }
+    h += `</div>`;
+
+    h += `<div class="action-row">
+      <button id="btn-train-go">${t.mode === 'dwell' ? '立即发车' : '重新寻路'}</button>
+      <button id="btn-demolish" class="danger">拆除列车（货落地）</button>
+      <button id="btn-clear">取消选择</button></div>`;
+    return h;
   }
 
   // ================= 统计 =================
@@ -490,7 +614,71 @@ FG.Panels = (() => {
     bodyEl().scrollTop = bodyEl().scrollHeight;
   }
 
+  function bindTrainActions(t) {
+    const game = FG.game;
+    const refresh = () => render();
+    for (const el of document.querySelectorAll('[data-sched-act]')) {
+      el.onclick = () => {
+        const [i, a] = el.dataset.schedAct.split(':');
+        const s = t.schedule[+i];
+        if (s && ['load', 'unload', 'none'].includes(a)) { s.action = a; FG.Events.emit('railway:change'); refresh(); }
+      };
+    }
+    for (const el of document.querySelectorAll('[data-sched-rm]')) {
+      el.onclick = () => {
+        const i = +el.dataset.schedRm;
+        t.schedule.splice(i, 1);
+        if (t.schedIndex >= t.schedule.length) t.schedIndex = 0;
+        t.repathCd = 0;
+        FG.Events.emit('railway:change'); refresh();
+      };
+    }
+    for (const el of document.querySelectorAll('[data-sched-up]')) {
+      el.onclick = () => {
+        const i = +el.dataset.schedUp;
+        if (i > 0) { [t.schedule[i - 1], t.schedule[i]] = [t.schedule[i], t.schedule[i - 1]]; FG.Events.emit('railway:change'); refresh(); }
+      };
+    }
+    for (const el of document.querySelectorAll('[data-sched-down]')) {
+      el.onclick = () => {
+        const i = +el.dataset.schedDown;
+        if (i < t.schedule.length - 1) { [t.schedule[i + 1], t.schedule[i]] = [t.schedule[i], t.schedule[i + 1]]; FG.Events.emit('railway:change'); refresh(); }
+      };
+    }
+    const addSel = document.getElementById('sched-add-station');
+    if (addSel) {
+      addSel.onchange = () => {
+        const sid = addSel.value;
+        if (!sid) return;
+        const actBtn = document.querySelector('[data-sched-add-act].active');
+        const action = actBtn ? actBtn.dataset.schedAddAct : 'load';
+        t.schedule.push({ stationId: sid, action });
+        if (t.mode === 'idle') { t.schedIndex = t.schedule.length - 1; t.repathCd = 0; }
+        FG.Events.emit('railway:change'); refresh();
+      };
+    }
+    for (const el of document.querySelectorAll('[data-sched-add-act]')) {
+      el.onclick = () => {
+        for (const x of document.querySelectorAll('[data-sched-add-act]')) x.classList.toggle('active', x === el);
+      };
+    }
+    const go = document.getElementById('btn-train-go');
+    if (go) go.onclick = () => {
+      if (t.mode === 'dwell') game.railway.forceDepart(t);
+      else { t.repathCd = 0; game.logMsg('列车 ' + t.id + '：已请求重新寻路', 'info'); }
+    };
+  }
+
   function bindActions() {
+    const game = FG.game;
+    const sel = game.selection;
+    // 火车站改名
+    const nameInput = document.getElementById('station-name');
+    if (nameInput && sel && sel.def && sel.def.station) {
+      nameInput.onchange = () => { game.railway.renameStation(sel.stationId, nameInput.value.trim() || sel.stationName); };
+    }
+    // 列车运输计划
+    if (sel && sel.type === 'train') bindTrainActions(sel);
     const btn = document.getElementById('btn-demolish');
     if (btn) btn.onclick = () => { if (FG.game.selection) FG.game.removeBuilding(FG.game.selection); };
     const rot = document.getElementById('btn-rotate');

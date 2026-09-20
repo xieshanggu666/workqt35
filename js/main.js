@@ -66,8 +66,7 @@
             dragPlace.lastY = tile.y;
           }
         }
-      }
-      updateTooltip(e.clientX - wrap.getBoundingClientRect().left, e.clientY - wrap.getBoundingClientRect().top, tile);
+      }      updateTooltip(e.clientX - wrap.getBoundingClientRect().left, e.clientY - wrap.getBoundingClientRect().top, tile);
     });
 
     canvas.addEventListener('mousedown', (e) => {
@@ -92,16 +91,16 @@
           return;
         }
         if (FG.game.ghost) {
-          if (FG.Buildings.byId(FG.game.ghost.type).beltTier !== undefined) {
+          const gdef = FG.Buildings.byId(FG.game.ghost.type);
+          // 传送带与轨道：按住左键拖动连续铺设并自动定向
+          if (gdef.beltTier !== undefined || gdef.rail) {
             dragPlace = { lastX: tile.x, lastY: tile.y };
             FG.game.placeGhost(tile.x, tile.y);
           } else {
             FG.game.placeGhost(tile.x, tile.y);
           }
         } else {
-          const b = FG.game.map.buildingAt(tile.x, tile.y);
-          if (b) FG.game.selectBuilding(b);
-          else { FG.game.selection = null; FG.Events.emit('selection:change'); }
+          FG.game.selectAt(tile.x, tile.y);
         }
       }
     });
@@ -158,9 +157,24 @@
       switch (e.key) {
         case 'r': case 'R':
           if (game.bpMode === 'place') game.rotateBlueprint();
-          else if (game.ghost) game.rotateGhost();
-          else if (game.selection && (game.selection.def.beltTier !== undefined || game.selection.def.inserterTier !== undefined)) {
+          else if (game.ghost) {
+            // 铁路信号：R 旋转时实时校验朝向（必须正对轨道），无效朝向自动跳过
+            const gd = FG.Buildings.byId(game.ghost.type);
+            if (gd.signal) {
+              for (let i = 0; i < 4; i++) {
+                game.ghost.dir = (game.ghost.dir + 1) % 4;
+                const t = game._lastMouseTile;
+                if (!t || game.canPlaceSignalDir(t.x, t.y, game.ghost.dir)) break;
+              }
+            } else {
+              game.rotateGhost();
+            }
+          }
+          else if (game.selection && (game.selection.def
+                    && (game.selection.def.beltTier !== undefined || game.selection.def.inserterTier !== undefined
+                        || game.selection.def.rail || game.selection.def.signal))) {
             game.selection.dir = (game.selection.dir + 1) % 4;
+            if (game.selection.def.signal || game.selection.def.rail) game.railway.markDirty();
           }
           break;
         case 'f': case 'F':
@@ -174,8 +188,7 @@
           break;
         case 'Delete': case 'Backspace':
           if (game.selection) game.removeBuilding(game.selection);
-          break;
-        case ' ':
+          break;        case ' ':
           e.preventDefault();
           game.togglePause();
           break;
@@ -199,13 +212,29 @@
     if (!m || !m.inBounds(tile.x, tile.y)) { tooltip.classList.add('hidden'); return; }
 
     const b = m.buildingAt(tile.x, tile.y);
-    const pile = !b ? m.pileAt(tile.x, tile.y) : null;
+    const train = !b ? game.railway.trainAtTile(tile.x, tile.y) : null;
+    const pile = !b && !train ? m.pileAt(tile.x, tile.y) : null;
     const planEntry = !b && game.construction ? game.construction.entryAt(tile.x, tile.y) : null;
     let html = '';
     if (b) {
-      const st = { working: '生产中/流动', starving: '缺料', blocked: '堵塞', idle: '闲置', empty: '枯竭' };
+      const st = { working: '生产中/流动', starving: '缺料', blocked: '堵塞', idle: '闲置', empty: '枯竭', noPath: '断路停车' };
       html += `<div class="tt-title">${b.def.name}</div>`;
       html += `<div class="tt-row">状态：<b>${st[b.status] || b.status}</b></div>`;
+      if (b.def.station) {
+        html += `<div class="tt-row">站名：<b>${b.stationName || '未命名'}</b>（${b.stationId || '-'}）</div>`;
+        const occ = game.railway.dwellingTrainAt(b.x, b.y);
+        html += `<div class="tt-row">停靠：<b>${occ ? occ.id : '无'}</b>${occ ? ' · 机械臂可装卸' : ''}</div>`;
+      }
+      if (b.def.signal) {
+        const ahead = game.railway.signalAhead(b);
+        if (!ahead.valid) html += `<div class="tt-row" style="color:var(--red)">朝向无效（前方须有轨道）</div>`;
+        else html += `<div class="tt-row">信号：<b style="color:${ahead.train ? 'var(--red)' : 'var(--green)'}">${ahead.train ? '红灯（分区占用）' : '绿灯'}</b></div>`;
+      }
+      if (b.def.rail) {
+        const deg = m.railDegree(b.x, b.y);
+        html += `<div class="tt-row">轨道${deg >= 3 ? ' · <b>交叉/岔路节点</b>（独立闭塞）' : deg === 1 ? ' · 尽头' : ''}</div>`;
+        if (game.railway.trainAtTile(b.x, b.y)) html += `<div class="tt-row">列车占用：<b>${game.railway.trainAtTile(b.x, b.y).id}</b></div>`;
+      }
       if (b.recipe) {
         const r = FG.Recipes.byId(b.recipe);
         const p = Math.min(1, b.progress / r.time);
@@ -223,6 +252,19 @@
       if (b.def.inserterTier !== undefined) html += `<div class="tt-row">方向 <b>${FG.Utils.dirName(b.dir)}</b> · 筛选 <b>${b.filter ? FG.Items.byId(b.filter).name : '任意'}</b>${b.demandMode ? ' · 按需' : ''}</div>`;
       if (b.type === 'pipe') html += `<div class="tt-row">流体 <b>${(b.level / FG.Config.FLUID_PIPE_CAP * 100).toFixed(0)}%</b></div>`;
       if (b.type === 'miner' && b.oreType) html += `<div class="tt-row">${FG.Items.byId(b.oreType).name} <b>${FG.Utils.fmtNum(m.amountAt(b.x, b.y))}</b></div>`;
+    } else if (train) {
+      const st = { working: '行驶中', blocked: '红灯/堵站等待', idle: '无运输计划', noPath: '断路停车' };
+      html += `<div class="tt-title">🚃 列车 ${train.id}</div>`;
+      html += `<div class="tt-row">状态：<b>${st[train.status] || train.status}</b></div>`;
+      const dest = train.destStationId ? game.railway.stationById(train.destStationId) : null;
+      html += `<div class="tt-row">目的地：<b>${dest ? dest.stationName : '—'}</b></div>`;
+      const cargo = train.cargo.filter(s => s.count > 0);
+      if (cargo.length) {
+        for (const s of cargo.slice(0, 3)) html += `<div class="tt-row">${FG.Items.byId(s.type).name} <b>×${s.count}</b></div>`;
+      } else {
+        html += `<div class="tt-row">货厢：空</div>`;
+      }
+      if (train.mode === 'dwell') html += `<div class="tt-row" style="color:var(--green)">停站装卸中（机械臂可访问）</div>`;
     } else if (pile) {
       html += `<div class="tt-title">地面物料</div>`;
       for (const s of pile.slice(0, 6)) html += `<div class="tt-row">${FG.Items.byId(s.type).name} <b>×${FG.Utils.fmtNum(s.count)}</b></div>`;

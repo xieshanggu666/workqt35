@@ -59,6 +59,12 @@ FG.Research = (() => {
       cost: { science2: 40, science3: 30 }, prereq: ['oilProcessing', 'advancedElectronics'],
       unlocksB: ['chemPlant'], unlocksR: ['craft:science3'],
     },
+    railway: {
+      id: 'railway', name: '铁路货运', col: 4, row: 0,
+      desc: '解锁轨道、火车站、铁路信号与列车：铺设跨区铁路网，用运输计划把远端矿区的物料直接送入产线。',
+      cost: { science1: 40, science2: 40 }, prereq: ['logistics2'],
+      unlocksB: ['rail', 'trainStop', 'railSignal', 'train'], unlocksR: [],
+    },
     rocketTech: {
       id: 'rocketTech', name: '火箭科技', col: 5, row: 1,
       desc: '解锁火箭部件与火箭燃料配方。',

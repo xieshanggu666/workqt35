@@ -33,6 +33,7 @@ FG.Blueprint = (() => {
           filter: b.filter || null,
           demandMode: !!b.demandMode,
           priority: b.priority || 'normal',
+          stationName: b.stationName || null,
         });
       }
     }
@@ -50,6 +51,7 @@ FG.Blueprint = (() => {
         filter: e.filter || null,
         demandMode: !!e.demandMode,
         priority: e.priority || 'normal',
+        stationName: e.stationName || null,
         require: e.require ? Object.assign({}, e.require) : undefined,
       })),
     };
@@ -109,6 +111,13 @@ FG.Blueprint = (() => {
             || (game.construction && game.construction.entryAt(x, y))) {
           cok = false; reason = 'terrain'; noOil++;
         }
+      } else if (FG.Buildings.byId(e.type).signal) {
+        // 铁路信号：朝向必须正对轨道格
+        if (!game.canPlaceSignalDir(x, y, e.dir || 0)) {
+          cok = false; reason = 'terrain'; blocked++;
+        } else if (game.construction && game.construction.entryAt(x, y)) {
+          cok = false; reason = 'planned'; blocked++;
+        }
       } else if (!game.canPlace(e.type, x, y)) {
         cok = false; reason = 'terrain'; blocked++;
       } else if (game.construction && game.construction.entryAt(x, y)) {
@@ -152,6 +161,7 @@ FG.Construction = class Construction {
         type: e.type, x: ox + e.dx, y: oy + e.dy, dir: e.dir || 0,
         recipe: e.recipe || null, filter: e.filter || null,
         demandMode: !!e.demandMode, priority: e.priority || 'normal',
+        stationName: e.stationName || null,
         state: 'wait',           // wait | done | skip
         stock: {},               // 该条目已预留（移出物流）的建材
       })),
@@ -413,6 +423,12 @@ FG.Construction = class Construction {
     if (b.type === 'miner') b.oreType = g.map.oreAt(e.x, e.y);
     g.map.register(b);
     g.sim.register(b);   // 接入生产调度：纳入每 tick 调度/传送带/机械臂/生产更新
+    if (b.def.station) {
+      // 蓝图复制的火车站落成时分配新 id（运输计划通过 id 引用站点），名称沿用蓝图
+      if (e.stationName) b.stationName = e.stationName;
+      g.railway.registerStation(b);
+    }
+    if (b.def.rail || b.def.station || b.def.signal) g.railway.markDirty();
     if (e.recipe && b.def.recipeBuilding && g.research.isRecipeUnlocked(e.recipe)) {
       b.recipe = e.recipe;
       FG.Map.syncRecipeSlots(b);
@@ -489,6 +505,7 @@ FG.Construction = class Construction {
         entries: p.entries.map(e => ({
           type: e.type, x: e.x, y: e.y, dir: e.dir, recipe: e.recipe,
           filter: e.filter, demandMode: e.demandMode, priority: e.priority, state: e.state,
+          stationName: e.stationName || null,
           stock: Object.assign({}, e.stock),
         })),
       })),
@@ -503,6 +520,7 @@ FG.Construction = class Construction {
         type: e.type, x: e.x, y: e.y, dir: e.dir || 0,
         recipe: e.recipe || null, filter: e.filter || null,
         demandMode: !!e.demandMode, priority: e.priority || 'normal',
+        stationName: e.stationName || null,
         state: e.state || 'wait',
         stock: e.stock || {},
       }));

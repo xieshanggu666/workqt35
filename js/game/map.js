@@ -97,6 +97,9 @@ FG.Map = class {
       oreType: null,
       // 实验室
       consumeCounter: 0,
+      // 火车站 / 信号
+      stationId: null,
+      stationName: null,
       // 统计
       totalCrafted: 0,
     };
@@ -187,5 +190,42 @@ FG.Map = class {
     const v = FG.Utils.dirVec(src.dir);
     if (src.x + v.x !== dst.x || src.y + v.y !== dst.y) return false;
     return FG.Map.beltEntrySide(dst, src.x, src.y) >= 0;
+  }
+
+  // ================= 铁路路网几何 =================
+  /** 该格是否为轨道节点（轨道或火车站：列车均可行驶/停靠） */
+  isRailNodeAt(x, y) {
+    if (!this.inBounds(x, y)) return false;
+    const b = this.buildingAt(x, y);
+    return !!(b && (b.def.rail || b.def.station));
+  }
+
+  railBuildingAt(x, y) {
+    if (!this.inBounds(x, y)) return null;
+    const b = this.buildingAt(x, y);
+    return (b && (b.def.rail || b.def.station)) ? b : null;
+  }
+
+  /** 相邻轨道节点方向列表（0=北 1=东 2=南 3=西），十字交叉天然支持多邻接 */
+  railNeighborDirs(x, y) {
+    const out = [];
+    for (let d = 0; d < 4; d++) {
+      const v = FG.Utils.dirVec(d);
+      if (this.isRailNodeAt(x + v.x, y + v.y)) out.push(d);
+    }
+    return out;
+  }
+
+  /** 轨道格邻接度（交叉线路判定用：≥3 为岔路口/十字节点） */
+  railDegree(x, y) { return this.railNeighborDirs(x, y).length; }
+
+  /** 相邻格是否有铁路信号（含朝向本格的信号），返回信号建筑或 null */
+  signalToward(x, y) {
+    for (let d = 0; d < 4; d++) {
+      const v = FG.Utils.dirVec(d);
+      const b = this.buildingAt(x + v.x, y + v.y);
+      if (b && b.def.signal) return b;
+    }
+    return null;
   }
 };

@@ -5,7 +5,7 @@
 window.FG = window.FG || {};
 
 FG.Config = {
-  VERSION: '1.4.0',
+  VERSION: '1.5.0',
 
   // 仿真节拍：每秒 20 tick
   TPS: 20,
@@ -35,6 +35,19 @@ FG.Config = {
   // 蓝图施工
   BP_MAX_AREA: 400,              // 框选蓝图的最大格数
   CONSTRUCT_BUILD_INTERVAL: 4,   // 施工计划相邻两栋建筑落成的 tick 间隔
+
+  // 铁路货运
+  TRAIN_SLOTS: 3,                // 列车货厢槽位数
+  TRAIN_SLOT_CAP: 100,           // 单槽容量
+  TRAIN_SPEED: 0.12,             // 列车巡航速度（格/tick，约 2.4 格/秒）
+  TRAIN_ACCEL: 0.02,             // 加速度（格/tick²）
+  TRAIN_BRAKE: 0.04,             // 常用减速度（格/tick²）
+  TRAIN_EMERGENCY_BRAKE: 0.12,   // 急停减速度（前方物理占用突变，最后防线）
+  TRAIN_INACT_TICKS: 60,         // 装卸停站：连续 N tick 货物无变化即发车（3 秒）
+  TRAIN_DWELL_MIN: 10,           // 最短停站 tick（至少完成一次机械臂取放循环）
+  TRAIN_WAIT_TICKS: 120,         // 无装卸任务（none 模式）停站时长（6 秒）
+  TRAIN_PATH_NODES: 4096,        // 路径搜索 BFS 节点上限（断路/超网保护）
+  RAIL_BLOCK_DIRTY_TICKS: 30,    // 路网拓扑变更后闭塞重建节流（tick）
 
   // 一键流水线
   PIPELINE_SEARCH_RADIUS: 40,    // 智能选位螺旋搜索半径（格）

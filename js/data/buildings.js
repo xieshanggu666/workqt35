@@ -119,6 +119,32 @@ FG.Buildings = (() => {
       cost: { ironPlate: 2 },   // 蓝图施工建材
       unlockedBy: null, storage: true,
     },
+
+    // ================= 铁路 =================
+    rail: {
+      id: 'rail', name: '轨道', cat: 'logistics',
+      desc: '列车行驶的路基。按住拖拽可连续铺设直线/直角转弯，与已有轨道十字交叉时自动形成交叉线路。',
+      cost: { ironPlate: 1, stone: 1 },
+      unlockedBy: 'railway', rail: true,
+    },
+    trainStop: {
+      id: 'trainStop', name: '火车站', cat: 'logistics',
+      desc: '运输计划的站点。列车到站停靠，机械臂可直接从停站列车装卸货物，接入产线供料。须紧邻轨道。',
+      cost: { ironPlate: 8, gear: 4 },
+      unlockedBy: 'railway', station: true,
+    },
+    railSignal: {
+      id: 'railSignal', name: '铁路信号', cat: 'logistics',
+      desc: '放在轨道旁（朝向轨道），把所对轨道区间切分为闭塞分区；前方分区被占用时亮红灯，列车在信号前等待，避免交叉线路撞车。',
+      cost: { ironPlate: 2, circuit: 1 },
+      unlockedBy: 'railway', signal: true,
+    },
+    train: {
+      id: 'train', name: '列车', cat: 'logistics',
+      desc: '在轨道上放置列车（3 货厢槽，每格 100）。选中列车可设置运输计划：到站自动装货/卸货，按闭塞信号行驶。',
+      cost: {},
+      unlockedBy: 'railway', train: true,
+    },
   };
 
   const byId = (id) => DEFS[id];

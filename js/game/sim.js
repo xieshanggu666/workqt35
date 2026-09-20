@@ -66,6 +66,8 @@ FG.Sim = class Sim {
     this.updateCrafters();
     this.updateMiners();
     this.updateLabs();
+    // 铁路：列车行驶/闭塞/停站装卸（在机械臂之后，停站货厢本 tick 的取放下一拍生效）
+    this.game.railway.tick();
   }
 
   // ================= 传送带 =================
@@ -260,6 +262,18 @@ FG.Sim = class Sim {
       }
       return null;
     }
+    // 停站列车货厢（火车站格上的停靠列车，与箱子同为物流终端）
+    const dwTrain = this.game.railway.dwellingTrainAt(sx, sy);
+    if (dwTrain) {
+      let type = null;
+      for (const slot of dwTrain.cargo) {
+        if (slot.count > 0 && match(slot.type) && this.scheduler.canTakeType(b, slot.type, null)) {
+          type = slot.type; break;
+        }
+      }
+      const got = type ? this.game.railway.cargoTakeOne(dwTrain, type) : null;
+      return got ? { type: got, tag: this.scheduler.tagOnPickup(b, got, null) } : null;
+    }
     // 地面物料堆（建筑被拆除后的保留物料）
     const pile = m.pileAt(sx, sy);
     if (pile) {
@@ -322,6 +336,16 @@ FG.Sim = class Sim {
     if (t && t.type === 'chest') {
       if (!this.scheduler.canDrop(b, t, type, tag)) return false;
       if (this.chestAdd(t, type, 1)) return true; // 入终端箱子：预留语义随货释放
+    }
+    // 停站列车货厢
+    const dwTrain = this.game.railway.dwellingTrainAt(tx, ty);
+    if (dwTrain) {
+      if (!this.scheduler.canDrop(b, null, type, tag)) return false;
+      if (this.game.railway.cargoCanAdd(dwTrain, type)) {
+        this.game.railway.cargoAdd(dwTrain, type, 1);
+        return true;
+      }
+      return false;
     }
     // 放到地面堆（无建筑时只有该格已有堆才继续堆放，避免误洒）
     if (!t && m.pileAt(tx, ty)) {

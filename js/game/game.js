@@ -25,6 +25,8 @@ FG.Game = class Game {
     this.bpSelect = null;         // 框选拖拽矩形 {x0,y0,x1,y1}
     this.pipelineId = null;       // 当前蓝图来自哪个一键流水线预设（null=普通框选蓝图）
     this.bpAnchor = null;         // 一键流水线智能选位原点（F 重新搜索；null=跟随鼠标）
+    // 铁路货运
+    this.railway = new FG.Railway(this);
     this.log = [];
     this.saveInfo = { slot: null, name: '', startDate: Date.now() };
     this.mapInfo = { presetId: 'greenfield', sizeId: 'medium', seed: 1, biome: 'grass' };
@@ -61,6 +63,7 @@ FG.Game = class Game {
     this.bpSelect = null;
     this.pipelineId = null;
     this.bpAnchor = null;
+    this.railway.reset();
     this.saveInfo = { slot: slot || null, name: name || '未命名工厂', startDate: Date.now() };
     this.mapInfo = {
       presetId: gen.presetId, sizeId: gen.sizeId || 'medium',
@@ -95,6 +98,7 @@ FG.Game = class Game {
         consumeCounter: b.consumeCounter, totalCrafted: b.totalCrafted,
         rr: b.rr, filter: b.filter, demandMode: b.demandMode,
         priority: b.priority, status: b.status,
+        stationId: b.stationId || null, stationName: b.stationName || null,
       });
     }
     const ores = this.map.ores.map(row => row.map(c => c ? { type: c.type, amount: c.amount } : null));
@@ -121,6 +125,7 @@ FG.Game = class Game {
       totals: this.stats.totals,
       construction: this.construction.serialize(),   // 施工计划（进度随存档恢复）
       blueprint: this.blueprint,                     // 蓝图剪贴板
+      railway: this.railway.serialize(),             // 列车货厢/行驶状态/运输计划
       meta: { playTime: this.playTime, name: this.saveInfo.name, startDate: this.saveInfo.startDate },
     };
   }
@@ -166,6 +171,8 @@ FG.Game = class Game {
       b.demandMode = !!sb.demandMode;
       b.priority = FG.Config.PRIORITIES[sb.priority] ? sb.priority : 'normal'; // 旧存档默认普通
       b.status = sb.status || 'idle';
+      b.stationId = sb.stationId || null;
+      b.stationName = sb.stationName || null;
       // 旧存档箱子槽位补齐
       if (b.def.storage) {
         while (b.chest.length < FG.Config.CHEST_SLOTS) b.chest.push({ type: null, count: 0, cap: FG.Config.CHEST_SLOT_CAP });
@@ -178,6 +185,7 @@ FG.Game = class Game {
       }
       this.map.register(b);
       this.sim.register(b);
+      if (b.def.station) this.railway.registerStation(b);
     }
 
     if (data.research) {
@@ -194,6 +202,8 @@ FG.Game = class Game {
     this.blueprint = data.blueprint || null;
     // 读回的一键流水线蓝图恢复来源标记（bpMode 不持久化，需重新进入放置预览）
     this.pipelineId = (this.blueprint && this.blueprint.fromPreset) || null;
+    // 铁路：恢复列车货厢/运输计划/行驶状态（路径按当前路网重新寻路）
+    this.railway.deserialize(data.railway || null);
     this.logMsg('存档已载入', 'info');
     FG.Events.emit('game:start');
   }
@@ -273,12 +283,28 @@ FG.Game = class Game {
     const def = FG.Buildings.byId(type);
     if (!this.map.inBounds(x, y)) return false;
     if (this.map.isOccupied(x, y)) return false;
+    if (this.railway.trainAtTile(x, y)) return false;   // 列车占格不可再放
     const terr = this.map.terrainAt(x, y);
     if (terr === 'water') return false;   // 建筑一律不能落在水面
     if (def.onTerrain === 'ore') return this.map.oreAt(x, y) !== null;
     if (def.onTerrain === 'water') return this.adjacentWater(x, y); // 水泵：陆地且临水域
     if (def.onTerrain === 'oil') return this.map.isOil(x, y);
+    if (def.signal) return this.signalFacesRail(x, y, 0) || this.signalFacesRail(x, y, 1)
+      || this.signalFacesRail(x, y, 2) || this.signalFacesRail(x, y, 3);
     return true;
+  }
+
+  /** 信号放在 (x,y) 朝 d 时，正前方一格是否为轨道（火车站也算） */
+  signalFacesRail(x, y, d) {
+    const v = FG.Utils.dirVec(d);
+    return this.map.isRailNodeAt(x + v.x, y + v.y);
+  }
+
+  /** 给定位置与朝向时信号是否有效（R 旋转/预览校验用） */
+  canPlaceSignalDir(x, y, d) {
+    if (!this.map.inBounds(x, y) || this.map.terrainAt(x, y) === 'water') return false;
+    if (this.map.isOccupied(x, y)) return false;
+    return this.signalFacesRail(x, y, d);
   }
 
   /** 该格四邻是否有水域（水泵/供水预设校验用） */
@@ -292,11 +318,21 @@ FG.Game = class Game {
 
   placeGhost(x, y) {
     if (!this.ghost) return false;
+    // 列车：不注册为建筑，直接加入铁路系统（必须放在轨道节点上且该格无车）
+    if (this.ghost.type === 'train') {
+      if (!this.map.isRailNodeAt(x, y) || this.railway.trainAtTile(x, y)) return false;
+      const t = this.railway.addTrain(x, y);
+      if (!t) return false;
+      FG.Events.emit('train:placed', t);
+      return true;
+    }
     if (!this.canPlace(this.ghost.type, x, y)) return false;
     const b = FG.Map.create(this.ghost.type, x, y, this.ghost.dir);
     if (b.type === 'miner') b.oreType = this.map.oreAt(x, y);
     this.map.register(b);
     this.sim.register(b);
+    if (b.def.station) this.railway.registerStation(b);
+    if (b.def.rail || b.def.station || b.def.signal) this.railway.markDirty();
     // 若该格有拆除时遗留的地面物料，优先回收进新建筑（在途物品不丢失）
     this.absorbPile(b);
     FG.Events.emit('building:placed', b);
@@ -352,6 +388,13 @@ FG.Game = class Game {
   }
 
   removeBuilding(b) {
+    // 列车不是建筑：从铁路系统移除（货厢物料落到所在格地面堆）
+    if (b && b.type === 'train') { this.railway.removeTrain(b); return; }
+    // 轨道上有列车时禁止拆轨（避免列车悬空）；火车站被列车占用时同样保留
+    if (b.def && (b.def.rail || b.def.station) && this.railway.trainAtTile(b.x, b.y)) {
+      this.logMsg('该轨道/站点正被列车占用，无法拆除', 'error');
+      return;
+    }
     // 物料保留：传送带上的在途物品、手中物品、槽位与箱子物料全部落到该格地面堆
     // 拆建即释放预留：落地前剥离在途预留标签，物料恢复为自由货物可被任何产线取用
     if (b.items) for (const it of b.items) this.map.pileAdd(b.x, b.y, it.type, 1);
@@ -363,6 +406,11 @@ FG.Game = class Game {
     }
     this.sim.unregister(b);
     this.map.unregister(b);
+    if (b.def.rail || b.def.station || b.def.signal) this.railway.markDirty();
+    if (b.def.station) {
+      // 站点拆除：以该站为目标的列车下一拍自动寻路到下一计划站
+      for (const t of this.railway.trains) if (t.destStationId === b.stationId) t.repathCd = 0;
+    }
     if (this.selection === b) this.selection = null;
     FG.Events.emit('building:removed', b);
   }
@@ -377,6 +425,17 @@ FG.Game = class Game {
   }
 
   selectBuilding(b) { this.selection = b; FG.Events.emit('selection:change', b); }
+
+  /** 点选：先建筑，其次该格停靠/行驶中的列车 */
+  selectAt(x, y) {
+    const b = this.map.buildingAt(x, y);
+    if (b) { this.selectBuilding(b); return b; }
+    const t = this.railway.trainAtTile(x, y);
+    if (t) { this.selection = t; FG.Events.emit('selection:change', t); return t; }
+    this.selection = null;
+    FG.Events.emit('selection:change');
+    return null;
+  }
 
   // ================= 蓝图施工 =================
   /** 切换蓝图模式：无 → 有剪贴板则放置、否则框选；放置 → 框选；框选 → 退出 */
@@ -553,6 +612,8 @@ FG.Game = class Game {
       }
     }
     for (const pile of this.map.piles.values()) for (const s of pile) add(s.type, s.count);
+    // 运输中货物：列车货厢（停站/在途/堵站均计入全图盘点）
+    for (const t of this.railway.trains) for (const s of t.cargo) add(s.type, s.count);
     return counts;
   }
 
