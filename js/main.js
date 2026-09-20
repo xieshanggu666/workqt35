@@ -60,7 +60,11 @@
       if (dragPlace) {
         const dx = tile.x - dragPlace.lastX, dy = tile.y - dragPlace.lastY;
         if (dx || dy) {
-          FG.game.ghost.dir = dx !== 0 ? (dx > 0 ? 1 : 3) : (dy > 0 ? 2 : 0);
+          const ghostDef = FG.Buildings.byId(FG.game.ghost.type);
+          // 传送带拖拽自动定向；轨道拖拽沿走向铺设（方向不影响接轨）
+          if (ghostDef && ghostDef.beltTier !== undefined) {
+            FG.game.ghost.dir = dx !== 0 ? (dx > 0 ? 1 : 3) : (dy > 0 ? 2 : 0);
+          }
           if (FG.game.placeGhost(tile.x, tile.y)) {
             dragPlace.lastX = tile.x;
             dragPlace.lastY = tile.y;
@@ -92,16 +96,22 @@
           return;
         }
         if (FG.game.ghost) {
-          if (FG.Buildings.byId(FG.game.ghost.type).beltTier !== undefined) {
+          const gDef = FG.Buildings.byId(FG.game.ghost.type);
+          if (gDef.beltTier !== undefined || gDef.railTier !== undefined) {
             dragPlace = { lastX: tile.x, lastY: tile.y };
             FG.game.placeGhost(tile.x, tile.y);
           } else {
             FG.game.placeGhost(tile.x, tile.y);
           }
         } else {
-          const b = FG.game.map.buildingAt(tile.x, tile.y);
-          if (b) FG.game.selectBuilding(b);
-          else { FG.game.selection = null; FG.Events.emit('selection:change'); }
+          // 先选列车（列车覆盖轨道格时优先），其次建筑
+          const tr = FG.game.railway && FG.game.railway.trainAt(tile.x, tile.y);
+          if (tr) FG.game.selectBuilding(tr);
+          else {
+            const b = FG.game.map.buildingAt(tile.x, tile.y);
+            if (b) FG.game.selectBuilding(b);
+            else { FG.game.selection = null; FG.Events.emit('selection:change'); }
+          }
         }
       }
     });
@@ -159,7 +169,8 @@
         case 'r': case 'R':
           if (game.bpMode === 'place') game.rotateBlueprint();
           else if (game.ghost) game.rotateGhost();
-          else if (game.selection && (game.selection.def.beltTier !== undefined || game.selection.def.inserterTier !== undefined)) {
+          else if (game.selection && !game.selection.isTrain
+                   && (game.selection.def.beltTier !== undefined || game.selection.def.inserterTier !== undefined)) {
             game.selection.dir = (game.selection.dir + 1) % 4;
           }
           break;
@@ -173,7 +184,8 @@
           game.toggleBlueprintMode();
           break;
         case 'Delete': case 'Backspace':
-          if (game.selection) game.removeBuilding(game.selection);
+          if (game.selection && game.selection.isTrain) game.removeTrainSelection();
+          else if (game.selection) game.removeBuilding(game.selection);
           break;
         case ' ':
           e.preventDefault();
@@ -199,10 +211,23 @@
     if (!m || !m.inBounds(tile.x, tile.y)) { tooltip.classList.add('hidden'); return; }
 
     const b = m.buildingAt(tile.x, tile.y);
+    const tr = !b && game.railway ? game.railway.trainAt(tile.x, tile.y)
+      : (game.railway && b && (b.type === 'rail' || b.def.railStation)) ? game.railway.trainAt(tile.x, tile.y) : null;
     const pile = !b ? m.pileAt(tile.x, tile.y) : null;
     const planEntry = !b && game.construction ? game.construction.entryAt(tile.x, tile.y) : null;
     let html = '';
-    if (b) {
+    if (tr) {
+      const ST = { moving: '行驶中', docked: '装卸中', waiting: '等站排队', blocked: '堵死/让行', noroute: '断路', paused: '已停运', idle: '待命' };
+      html += `<div class="tt-title">🚆 列车 ${tr.id}</div>`;
+      html += `<div class="tt-row">状态：<b>${ST[tr.state] || tr.state}</b></div>`;
+      html += `<div class="tt-row">载货 <b>${tr.cargoTotal()}/${FG.Config.TRAIN_CARGO_CAP}</b> 件 · 停靠 ${tr.stopIdx + 1}/${Math.max(1, tr.stops.length)}</div>`;
+      const stop = tr.stops[tr.stopIdx];
+      if (stop) {
+        const st = game.railway.stationById(stop.stationId);
+        html += `<div class="tt-row">目标：<b>${st ? st.stationName : '站点已拆除'}</b> · ${stop.action === 'load' ? '装' : '卸'} ${stop.item ? FG.Items.byId(stop.item).name : '任意'}×${stop.count}</div>`;
+      }
+      if (tr.cargo.length) html += `<div class="tt-row">${tr.cargo.slice(0, 4).map(s => FG.Items.byId(s.type).name + '×' + s.count).join('、')}${tr.cargo.length > 4 ? '…' : ''}</div>`;
+    } else if (b) {
       const st = { working: '生产中/流动', starving: '缺料', blocked: '堵塞', idle: '闲置', empty: '枯竭' };
       html += `<div class="tt-title">${b.def.name}</div>`;
       html += `<div class="tt-row">状态：<b>${st[b.status] || b.status}</b></div>`;
@@ -222,6 +247,23 @@
       }
       if (b.def.inserterTier !== undefined) html += `<div class="tt-row">方向 <b>${FG.Utils.dirName(b.dir)}</b> · 筛选 <b>${b.filter ? FG.Items.byId(b.filter).name : '任意'}</b>${b.demandMode ? ' · 按需' : ''}</div>`;
       if (b.type === 'pipe') html += `<div class="tt-row">流体 <b>${(b.level / FG.Config.FLUID_PIPE_CAP * 100).toFixed(0)}%</b></div>`;
+      if (b.type === 'rail') {
+        const held = game.railway.occupiedBy(b.x, b.y);
+        html += `<div class="tt-row">轨道${held ? ` · <b style="color:#e05c5c">${held} 占用</b>` : ''}</div>`;
+      }
+      if (b.def.railStation) {
+        const held = game.railway.occupiedBy(b.x, b.y);
+        html += `<div class="tt-row">站号 <b>${b.stationId}</b>${held ? ` · <b style="color:#58c26f">${held} 停靠中</b>` : ''}</div>`;
+        const cargo = b.chest.reduce((n, s) => n + s.count, 0);
+        html += `<div class="tt-row">货位 <b>${cargo}/${FG.Config.STATION_SLOTS * FG.Config.STATION_SLOT_CAP}</b></div>`;
+      }
+      if (b.def.railDepot) {
+        const near = FG.Utils.dirs.map(v => {
+          const nb = m.buildingAt(b.x + v.x, b.y + v.y);
+          return nb && (nb.type === 'rail' || nb.def.railStation);
+        }).filter(Boolean).length;
+        html += `<div class="tt-row">接轨 <b>${near}</b> 侧 · 选中可编组发车</div>`;
+      }
       if (b.type === 'miner' && b.oreType) html += `<div class="tt-row">${FG.Items.byId(b.oreType).name} <b>${FG.Utils.fmtNum(m.amountAt(b.x, b.y))}</b></div>`;
     } else if (pile) {
       html += `<div class="tt-title">地面物料</div>`;

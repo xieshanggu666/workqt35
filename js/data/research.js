@@ -35,6 +35,12 @@ FG.Research = (() => {
       cost: { science1: 30, science2: 40 }, prereq: ['logistics2'],
       unlocksB: ['expressBelt'], unlocksR: [],
     },
+    railTransport: {
+      id: 'railTransport', name: '铁路货运', col: 4, row: 3,
+      desc: '铺设轨道、建设火车站与机务段，编组列车按运输计划跨区长距离运输散装物料。',
+      cost: { science1: 20, science2: 30 }, prereq: ['logistics2'],
+      unlocksB: ['rail', 'station', 'trainDepot'], unlocksR: [],
+    },
     advancedElectronics: {
       id: 'advancedElectronics', name: '高级电子学', col: 2, row: 1,
       desc: '解锁高级电路板、二级组装机与太阳能板。',

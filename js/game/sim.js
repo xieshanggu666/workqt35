@@ -39,7 +39,7 @@ FG.Sim = class Sim {
     if (b.def.beltTier !== undefined) this.belts.push(b);
     else if (b.def.inserterTier !== undefined) this.inserters.push(b);
     else if (t === 'pipe') this.pipes.push(b);
-    else if (t === 'chest') this.chests.push(b);
+    else if (t === 'chest' || (b.def && b.def.storage && b.def.railStation)) this.chests.push(b);
     else if (t === 'pump' || t === 'pumpjack') this.fluidProducers.push(b);
     else if (t === 'miner') this.miners.push(b);
     else if (t === 'lab') this.labs.push(b);
@@ -114,7 +114,7 @@ FG.Sim = class Sim {
         const nx = dst.x + v.x, ny = dst.y + v.y;
         const next = m.buildingAt(nx, ny);
         if (next && next.def.beltTier === undefined) {
-          if (next.type === 'chest') {
+          if (next.def.storage) {
             if (this.chestAdd(next, head.type, 1)) { delete head.tag; dst.items.pop(); }
             else head.pos = 0.99;
           } else {
@@ -163,7 +163,7 @@ FG.Sim = class Sim {
     if (next.def.beltTier !== undefined) {
       return FG.Map.beltEntrySide(next, b.x, b.y) >= 0 && this.hasEntryRoom(next);
     }
-    if (next.type === 'chest') return this.chestCanAdd(next, head.type, 1);
+    if (next.def.storage) return this.chestCanAdd(next, head.type, 1);
     return false;
   }
 
@@ -251,7 +251,7 @@ FG.Sim = class Sim {
       const raw = s.items.splice(best, 1)[0];
       return { type: raw.type, tag: this.scheduler.tagOnPickup(b, raw.type, raw.tag) };
     }
-    if (s && s.type === 'chest') {
+    if (s && s.def.storage) {
       for (const slot of s.chest) {
         if (slot.count > 0 && match(slot.type) && this.scheduler.canTakeType(b, slot.type, null)) {
           slot.count--;
@@ -319,9 +319,9 @@ FG.Sim = class Sim {
       t.items.unshift(ni);
       return true;
     }
-    if (t && t.type === 'chest') {
+    if (t && t.def.storage) {
       if (!this.scheduler.canDrop(b, t, type, tag)) return false;
-      if (this.chestAdd(t, type, 1)) return true; // 入终端箱子：预留语义随货释放
+      if (this.chestAdd(t, type, 1)) return true; // 入终端仓库：预留语义随货释放
     }
     // 放到地面堆（无建筑时只有该格已有堆才继续堆放，避免误洒）
     if (!t && m.pileAt(tx, ty)) {

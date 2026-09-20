@@ -97,6 +97,9 @@ FG.Map = class {
       oreType: null,
       // 实验室
       consumeCounter: 0,
+      // 火车站（storage 已在下方建 chest 货位）
+      stationId: null,
+      stationName: null,
       // 统计
       totalCrafted: 0,
     };

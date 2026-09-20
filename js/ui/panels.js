@@ -45,17 +45,23 @@ FG.Panels = (() => {
     const sel = game.selection;
     let html = '';
     if (!sel) {
+      const ry = game.railway;
       html += `<div class="panel-sec"><h4>工厂概况</h4>
         <div class="info-grid">
           <div class="k">建筑数</div><div class="v">${game.totalBuildings()}</div>
+          <div class="k">列车</div><div class="v">${ry ? ry.trains.length : 0}</div>
+          <div class="k">火车站</div><div class="v">${ry ? ry.stationList().length : 0}</div>
           <div class="k">已研究</div><div class="v">${game.research.completed.size} / ${FG.Research.list().length}</div>
           <div class="k">游戏时间</div><div class="v">${FG.Utils.fmtTime(game.playTime)}</div>
         </div>
         <div style="color:var(--text-dim);font-size:11px;margin-top:8px;line-height:1.6">
           点击地图上的建筑查看详情。<br>
           拖动右键平移视野，滚轮缩放。<br>
-          矿机→熔炉→组装机→科学包，最后发射卫星！
+          矿机→熔炉→组装机→科学包，最后发射卫星！<br>
+          研究「铁路货运」后铺轨道、建车站，用列车跨区运料。
         </div></div>`;
+    } else if (sel.isTrain) {
+      html += trainInfo(sel);
     } else {
       html += buildingInfo(sel);
     }
@@ -167,13 +173,49 @@ FG.Panels = (() => {
       }
       h += `</div>`;
     }
-    // 箱子
-    if (b.type === 'chest') {
-      h += `<div class="panel-sec"><h4>存储</h4>`;
+    // 箱子 / 火车站货位
+    if (b.def.storage) {
+      h += `<div class="panel-sec"><h4>${b.def.railStation ? '车站货位（接入产线供料）' : '存储'}</h4>`;
       for (const s of b.chest) {
         h += slotRow(s.type ? FG.Items.byId(s.type).name : '空', s);
       }
       h += `</div>`;
+    }
+
+    // 火车站：命名 + 在本站停靠的列车计划
+    if (b.def.railStation) {
+      h += `<div class="panel-sec"><h4>火车站</h4>
+        <div class="info-grid">
+          <div class="k">站号</div><div class="v">${b.stationId}</div>
+        </div>
+        <label class="cfg-row" style="margin:4px 0">站名
+          <input type="text" id="station-name" class="txt-input" value="${(b.stationName || '').replace(/"/g, '&quot;')}" maxlength="12">
+        </label>
+        <div style="font-size:11px;color:var(--text-dim);line-height:1.5">
+          机械臂/传送带可直接与本站货位转运：到站物料即接入按需物流，供周边产线使用。</div>`;
+      const users = [];
+      for (const tr of game.railway.trains) {
+        tr.stops.forEach((s, i) => { if (s.stationId === b.stationId) users.push({ tr, i }); });
+      }
+      if (users.length) {
+        h += `<div style="font-size:11px;color:var(--text-dim);margin-top:6px">停靠列车：</div>`;
+        for (const u of users) {
+          h += `<div class="slot-row"><span class="sl-name">🚆 ${u.tr.id}</span>
+            <span style="color:var(--text)">第 ${u.i + 1} 站 · ${u.tr.stops[u.i].action === 'load' ? '装' : '卸'}
+            ${u.tr.stops[u.i].item ? FG.Items.byId(u.tr.stops[u.i].item).name : '任意'}×${u.tr.stops[u.i].count}</span></div>`;
+        }
+      }
+      h += `</div>`;
+    }
+
+    // 机务段：发车
+    if (b.def.railDepot) {
+      const trains = game.railway.trains;
+      h += `<div class="panel-sec"><h4>机务段</h4>
+        <div style="font-size:11px;color:var(--text-dim);line-height:1.5;margin-bottom:6px">
+          向相邻空轨道编组一列新车；选中列车可编辑其运输计划（站点顺序与装卸规则）。</div>
+        <div class="action-row"><button id="btn-spawn-train">🚆 编组列车</button></div>
+        <div style="font-size:11px;color:var(--text-dim);margin-top:4px">在役列车 ${trains.length} 列</div></div>`;
     }
 
     // 操作按钮
@@ -191,6 +233,89 @@ FG.Panels = (() => {
     return `<div class="slot-row${warn ? ' slot-warn' : ''}" title="${warn ? '当前配方不再需要，机械臂会将其运走' : ''}"><span class="sl-name">${name}</span>
       <div class="sl-bar"><div class="fill" style="width:${Math.min(100, s.count / s.cap * 100).toFixed(0)}%"></div></div>
       <span class="sl-count">${FG.Utils.fmtNum(s.count)}/${FG.Utils.fmtNum(s.cap)}</span></div>`;
+  }
+
+  // ================= 列车 =================
+  const TRAIN_STATE_NAMES = { moving: '行驶中', docked: '装卸中', waiting: '等站排队', blocked: '堵死/让行', noroute: '断路（待轨网接通）', paused: '已停运', idle: '待命' };
+
+  function trainInfo(tr) {
+    const game = FG.game, ry = game.railway;
+    let h = `<div class="panel-sec"><h4>🚆 列车 ${tr.id}</h4>
+      <div class="info-grid">
+        <div class="k">状态</div><div class="v status-${tr.state === 'docked' ? 'working' : tr.state === 'blocked' || tr.state === 'noroute' ? 'blocked' : 'idle'}">${TRAIN_STATE_NAMES[tr.state] || tr.state}</div>
+        <div class="k">位置</div><div class="v">(${tr.x}, ${tr.y})</div>
+        <div class="k">载货</div><div class="v">${tr.cargoTotal()}/${FG.Config.TRAIN_CARGO_CAP}</div>
+        <div class="k">停站</div><div class="v">${tr.stops.length ? (tr.stopIdx + 1) + ' / ' + tr.stops.length : '无计划'}</div>
+      </div></div>`;
+
+    // 车载货物
+    h += `<div class="panel-sec"><h4>车载货物</h4>`;
+    if (!tr.cargo.length) h += `<div style="color:var(--text-dim);font-size:11px">空车</div>`;
+    for (const s of tr.cargo) {
+      h += `<div class="slot-row"><span class="sl-name">${FG.Items.byId(s.type).name}</span>
+        <div class="sl-bar"><div class="fill" style="width:${(s.count / FG.Config.TRAIN_CARGO_CAP * 100).toFixed(0)}%"></div></div>
+        <span class="sl-count">${FG.Utils.fmtNum(s.count)}</span></div>`;
+    }
+    h += `</div>`;
+
+    // 运输计划
+    const stations = ry.stationList();
+    const solids = FG.Items.list().filter(i => !i.fluid);
+    h += `<div class="panel-sec"><h4>运输计划（${tr.plan.loop === false ? '单程：末站卸完待命' : '循环执行'}）</h4>
+      <label class="cfg-row"><input type="checkbox" id="train-loop" ${tr.plan.loop !== false ? 'checked' : ''}>
+        <span>循环运输：末站完成后自动返回首站；取消则末站卸完即待命</span></label>`;
+    if (!stations.length) {
+      h += `<div style="color:var(--red);font-size:11px">图上还没有火车站：先在轨道旁建「火车站」，再为其添加停靠动作。</div>`;
+    }
+    tr.stops.forEach((s, i) => {
+      const st = ry.stationById(s.stationId);
+      h += `<div class="bp-plan ${i === tr.stopIdx && tr.state === 'docked' ? '' : ''}" style="margin-bottom:6px">
+        <div class="bp-head"><span>第 ${i + 1} 站 · ${st ? st.stationName : '⚠ 站点已拆除'}</span>
+          <span class="plan-st ${s.action === 'load' ? 'st-active' : 'st-waiting'}">${s.action === 'load' ? '装货' : '卸货'}</span></div>
+        <div class="stop-cfg">
+          <select data-stop-act="${i}">
+            <option value="unload" ${s.action === 'unload' ? 'selected' : ''}>卸货（车→站）</option>
+            <option value="load" ${s.action === 'load' ? 'selected' : ''}>装货（站→车）</option>
+          </select>
+          <select data-stop-item="${i}">
+            <option value="">任意物品</option>
+            ${solids.map(it => `<option value="${it.id}" ${s.item === it.id ? 'selected' : ''}>${it.name}</option>`).join('')}
+          </select>
+          <input type="number" min="1" max="${FG.Config.TRAIN_CARGO_CAP}" class="num-input" data-stop-count="${i}" value="${s.count}">
+        </div>
+        <div class="action-row" style="margin-top:4px">
+          <button data-stop-up="${i}" ${i === 0 ? 'disabled' : ''}>↑</button>
+          <button data-stop-down="${i}" ${i === tr.stops.length - 1 ? 'disabled' : ''}>↓</button>
+          <button data-stop-skip="${i}">立即跳过</button>
+          <button data-stop-rm="${i}" class="danger">删除</button>
+        </div>
+      </div>`;
+    });
+    if (stations.length) {
+      h += `<div class="stop-cfg" style="margin-top:6px">
+        <select id="add-stop-station">
+          ${stations.map(s => `<option value="${s.stationId}">${s.stationName} (${s.x},${s.y})</option>`).join('')}
+        </select>
+        <select id="add-stop-act">
+          <option value="load">装货</option>
+          <option value="unload">卸货</option>
+        </select>
+        <select id="add-stop-item">
+          <option value="">任意物品</option>
+          ${solids.map(it => `<option value="${it.id}">${it.name}</option>`).join('')}
+        </select>
+        <input type="number" id="add-stop-count" class="num-input" min="1" value="20">
+        <button id="btn-add-stop">＋ 添加停靠</button>
+      </div>`;
+    }
+    h += `</div>`;
+
+    h += `<div class="action-row">
+      <button id="btn-train-pause">${tr.plan.paused ? '▶ 恢复运行' : '⏸ 停运'}</button>
+      <button id="btn-train-skip">跳过当前站</button>
+      <button id="btn-remove-train" class="danger">解编（货落地）</button>
+      <button id="btn-clear">取消选择</button></div>`;
+    return h;
   }
 
   // ================= 统计 =================
@@ -490,13 +615,96 @@ FG.Panels = (() => {
     bodyEl().scrollTop = bodyEl().scrollHeight;
   }
 
+  function bindTrainActions(tr) {
+    const refresh = () => render();
+    const loopChk = document.getElementById('train-loop');
+    if (loopChk) loopChk.onchange = () => { tr.plan.loop = loopChk.checked; refresh(); };
+    document.querySelectorAll('[data-stop-act]').forEach(sel => {
+      sel.onchange = () => tr.updateStop(+sel.dataset.stopAct, { action: sel.value });
+    });
+    document.querySelectorAll('[data-stop-item]').forEach(sel => {
+      sel.onchange = () => tr.updateStop(+sel.dataset.stopItem, { item: sel.value || null });
+    });
+    document.querySelectorAll('[data-stop-count]').forEach(inp => {
+      inp.onchange = () => { const n = parseInt(inp.value, 10); tr.updateStop(+inp.dataset.stopCount, { count: isNaN(n) ? 1 : n }); refresh(); };
+    });
+    document.querySelectorAll('[data-stop-rm]').forEach(btn => {
+      btn.onclick = () => { tr.removeStop(+btn.dataset.stopRm); refresh(); };
+    });
+    document.querySelectorAll('[data-stop-skip]').forEach(btn => {
+      btn.onclick = () => {
+        const i = +btn.dataset.stopSkip;
+        if (i === tr.stopIdx) tr.skip();
+        else tr.removeStop(i);
+        refresh();
+      };
+    });
+    document.querySelectorAll('[data-stop-up]').forEach(btn => {
+      btn.onclick = () => { moveStop(tr, +btn.dataset.stopUp, -1); refresh(); };
+    });
+    document.querySelectorAll('[data-stop-down]').forEach(btn => {
+      btn.onclick = () => { moveStop(tr, +btn.dataset.stopDown, 1); refresh(); };
+    });
+    const add = document.getElementById('btn-add-stop');
+    if (add) add.onclick = () => {
+      const sid = document.getElementById('add-stop-station').value;
+      const act = document.getElementById('add-stop-act').value;
+      const item = document.getElementById('add-stop-item').value || null;
+      const n = parseInt(document.getElementById('add-stop-count').value, 10);
+      tr.addStop(sid, act, item, isNaN(n) ? 1 : n);
+      refresh();
+    };
+    const pause = document.getElementById('btn-train-pause');
+    if (pause) pause.onclick = () => { tr.setPaused(!tr.plan.paused); refresh(); };
+    const skip = document.getElementById('btn-train-skip');
+    if (skip) skip.onclick = () => { tr.skip(); refresh(); };
+    const rm = document.getElementById('btn-remove-train');
+    if (rm) rm.onclick = () => FG.game.removeTrainSelection();
+  }
+
+  /** 上移/下移停靠站（简单交换；当前停站索引同步） */
+  function moveStop(tr, i, dir) {
+    const j = i + dir;
+    if (j < 0 || j >= tr.stops.length) return;
+    const arr = tr.stops;
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+    if (tr.stopIdx === i) tr.stopIdx = j;
+    else if (tr.stopIdx === j) tr.stopIdx = i;
+  }
+
   function bindActions() {
+    const game = FG.game;
+    // 火车站改名
+    const nameInp = document.getElementById('station-name');
+    if (nameInp) nameInp.onchange = () => {
+      const b = game.selection;
+      if (b && b.def.railStation) b.stationName = nameInp.value.trim() || ('站点 ' + b.stationId.slice(1));
+    };
+    // 机务段发车
+    const spawn = document.getElementById('btn-spawn-train');
+    if (spawn) spawn.onclick = () => {
+      const depot = game.selection;
+      const tr = game.railway.spawnTrain(depot);
+      if (tr) {
+        game.logMsg('🚆 已编组列车 ' + tr.id + '：选中列车添加停靠站点与装卸规则', 'unlock');
+        game.selectBuilding(tr);
+      } else {
+        game.logMsg('⚠ 机务段四周没有空闲轨道（接轨格被占或未铺轨）', 'error');
+      }
+    };
+    // 列车计划编辑
+    const sel = game.selection;
+    if (sel && sel.isTrain) bindTrainActions(sel);
+
     const btn = document.getElementById('btn-demolish');
-    if (btn) btn.onclick = () => { if (FG.game.selection) FG.game.removeBuilding(FG.game.selection); };
+    if (btn) btn.onclick = () => {
+      if (FG.game.selection && FG.game.selection.isTrain) FG.game.removeTrainSelection();
+      else if (FG.game.selection) FG.game.removeBuilding(FG.game.selection);
+    };
     const rot = document.getElementById('btn-rotate');
     if (rot) rot.onclick = () => {
       const b = FG.game.selection;
-      if (b) { b.dir = (b.dir + 1) % 4; render(); }
+      if (b && !b.isTrain) { b.dir = (b.dir + 1) % 4; render(); }
     };
     const clr = document.getElementById('btn-clear');
     if (clr) clr.onclick = () => { FG.game.selection = null; FG.Events.emit('selection:change'); };

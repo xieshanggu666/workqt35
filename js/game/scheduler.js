@@ -186,7 +186,7 @@ FG.Scheduler = class Scheduler {
     if (b) {
       if (b.def.beltTier !== undefined) {
         for (const it of b.items) if (!it.tag) add(it.type, 1);
-      } else if (b.type === 'chest') {
+      } else if (b.def.storage) {
         for (const s of b.chest) if (s.count > 0) add(s.type, s.count);
       } else if (b.slots) {
         // 与 pickSource 一致：产物槽可取；输入槽仅取与当前配方无关的残留料
@@ -312,7 +312,7 @@ FG.Scheduler = class Scheduler {
       return m.pileAt(x, y) ? { terminal: true, items: new Set() }
                             : { terminal: false, items: new Set() };
     }
-    if (b.type === 'chest') return { terminal: true, items: new Set() };
+    if (b.def.storage) return { terminal: true, items: new Set() };
     if (b.def.recipeBuilding || b.type === 'lab') {
       return { terminal: false, items: new Set([FG.Utils.key(b.x, b.y)]) };
     }

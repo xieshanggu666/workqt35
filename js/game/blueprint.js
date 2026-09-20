@@ -33,6 +33,7 @@ FG.Blueprint = (() => {
           filter: b.filter || null,
           demandMode: !!b.demandMode,
           priority: b.priority || 'normal',
+          stationName: b.stationName || null,
         });
       }
     }
@@ -50,6 +51,7 @@ FG.Blueprint = (() => {
         filter: e.filter || null,
         demandMode: !!e.demandMode,
         priority: e.priority || 'normal',
+        stationName: e.stationName || null,
         require: e.require ? Object.assign({}, e.require) : undefined,
       })),
     };
@@ -152,6 +154,7 @@ FG.Construction = class Construction {
         type: e.type, x: ox + e.dx, y: oy + e.dy, dir: e.dir || 0,
         recipe: e.recipe || null, filter: e.filter || null,
         demandMode: !!e.demandMode, priority: e.priority || 'normal',
+        stationName: e.stationName || null,
         state: 'wait',           // wait | done | skip
         stock: {},               // 该条目已预留（移出物流）的建材
       })),
@@ -411,8 +414,13 @@ FG.Construction = class Construction {
     const g = this.game;
     const b = FG.Map.create(e.type, e.x, e.y, e.dir);
     if (b.type === 'miner') b.oreType = g.map.oreAt(e.x, e.y);
+    if (b.def.railStation) {
+      b.stationId = 'S' + (g.railway.stationSeq++);
+      b.stationName = e.stationName || ('站点 ' + b.stationId.slice(1));
+    }
     g.map.register(b);
     g.sim.register(b);   // 接入生产调度：纳入每 tick 调度/传送带/机械臂/生产更新
+    if (b.type === 'rail' || b.def.railStation) g.railway.markDirty();
     if (e.recipe && b.def.recipeBuilding && g.research.isRecipeUnlocked(e.recipe)) {
       b.recipe = e.recipe;
       FG.Map.syncRecipeSlots(b);
@@ -489,6 +497,7 @@ FG.Construction = class Construction {
         entries: p.entries.map(e => ({
           type: e.type, x: e.x, y: e.y, dir: e.dir, recipe: e.recipe,
           filter: e.filter, demandMode: e.demandMode, priority: e.priority, state: e.state,
+          stationName: e.stationName || null,
           stock: Object.assign({}, e.stock),
         })),
       })),
@@ -503,6 +512,7 @@ FG.Construction = class Construction {
         type: e.type, x: e.x, y: e.y, dir: e.dir || 0,
         recipe: e.recipe || null, filter: e.filter || null,
         demandMode: !!e.demandMode, priority: e.priority || 'normal',
+        stationName: e.stationName || null,
         state: e.state || 'wait',
         stock: e.stock || {},
       }));
@@ -546,7 +556,7 @@ class MaterialPool {
     this.free = new Map();   // item -> 可分配总量
     this.chests = [];
     for (const b of game.map.buildings.values()) {
-      if (b.type !== 'chest') continue;
+      if (!b.def.storage) continue;
       this.chests.push(b);
       for (const s of b.chest) {
         if (s.type && s.count > 0) this.free.set(s.type, (this.free.get(s.type) || 0) + s.count);

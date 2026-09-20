@@ -5,7 +5,7 @@
 window.FG = window.FG || {};
 
 FG.Config = {
-  VERSION: '1.4.0',
+  VERSION: '1.5.0',
 
   // 仿真节拍：每秒 20 tick
   TPS: 20,
@@ -31,6 +31,16 @@ FG.Config = {
   PRIORITIES: { low: 1, normal: 2, high: 3 },
   // 机械臂从传送带上抓取时，夹爪到物品的最大距离（格，0~1）
   INSERTER_PICK_REACH: 0.8,
+
+  // 铁路货运
+  TRAIN_CARGO_CAP: 60,       // 列车载货上限（混堆件数）
+  TRAIN_MOVE_TICKS: 4,       // 列车每走一格的 tick 数（5 格/秒）
+  TRAIN_TRANSFER: 2,         // 停靠站点时每 tick 装卸件数
+  TRAIN_DWELL_MIN: 10,       // 最短停站 tick 数（给机械臂/装卸反应时间）
+  TRAIN_DWELL_MAX: 300,      // 最长停站 tick 数（15 秒，防堵站：到时强制离站）
+  STATION_SLOTS: 4,          // 火车站货位格数（与箱子一致）
+  STATION_SLOT_CAP: 1000,    // 火车站单货位容量
+
 
   // 蓝图施工
   BP_MAX_AREA: 400,              // 框选蓝图的最大格数

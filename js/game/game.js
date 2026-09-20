@@ -8,6 +8,7 @@ FG.Game = class Game {
     this.sim = null;
     this.stats = new FG.Stats();
     this.research = new FG.ResearchMgr(this);
+    this.railway = new FG.Railway(this);   // 铁路货运：轨网/列车/调度状态
     this.speed = 1;
     this.paused = false;
     this.tickCount = 0;
@@ -49,6 +50,7 @@ FG.Game = class Game {
     this.sim.init(this);
     this.stats = new FG.Stats();
     this.research = new FG.ResearchMgr(this);
+    this.railway = new FG.Railway(this);
     this.tickCount = 0;
     this.playTime = 0;
     this.simAcc = 0;
@@ -95,6 +97,7 @@ FG.Game = class Game {
         consumeCounter: b.consumeCounter, totalCrafted: b.totalCrafted,
         rr: b.rr, filter: b.filter, demandMode: b.demandMode,
         priority: b.priority, status: b.status,
+        stationId: b.stationId || null, stationName: b.stationName || null,
       });
     }
     const ores = this.map.ores.map(row => row.map(c => c ? { type: c.type, amount: c.amount } : null));
@@ -121,6 +124,7 @@ FG.Game = class Game {
       totals: this.stats.totals,
       construction: this.construction.serialize(),   // 施工计划（进度随存档恢复）
       blueprint: this.blueprint,                     // 蓝图剪贴板
+      railway: this.railway.serialize(),             // 列车/运输计划/调度状态（含在途货物）
       meta: { playTime: this.playTime, name: this.saveInfo.name, startDate: this.saveInfo.startDate },
     };
   }
@@ -166,6 +170,8 @@ FG.Game = class Game {
       b.demandMode = !!sb.demandMode;
       b.priority = FG.Config.PRIORITIES[sb.priority] ? sb.priority : 'normal'; // 旧存档默认普通
       b.status = sb.status || 'idle';
+      b.stationId = sb.stationId || null;
+      b.stationName = sb.stationName || null;
       // 旧存档箱子槽位补齐
       if (b.def.storage) {
         while (b.chest.length < FG.Config.CHEST_SLOTS) b.chest.push({ type: null, count: 0, cap: FG.Config.CHEST_SLOT_CAP });
@@ -192,6 +198,8 @@ FG.Game = class Game {
     // 施工计划与蓝图剪贴板（旧存档无此字段 → 空计划/空剪贴板）
     this.construction.deserialize(data.construction || null);
     this.blueprint = data.blueprint || null;
+    // 铁路：列车在途货物与调度状态随档恢复（占用表由列车位置重建）
+    this.railway.deserialize(data.railway || null);
     // 读回的一键流水线蓝图恢复来源标记（bpMode 不持久化，需重新进入放置预览）
     this.pipelineId = (this.blueprint && this.blueprint.fromPreset) || null;
     this.logMsg('存档已载入', 'info');
@@ -249,6 +257,7 @@ FG.Game = class Game {
   tickOnce() {
     this.sim.tick();
     this.construction.tick();   // 施工计划：备料 → 落成
+    this.railway.tick();        // 铁路：区间占用 → 行驶 → 停站装卸
     this.tickCount++;
   }
 
@@ -278,7 +287,19 @@ FG.Game = class Game {
     if (def.onTerrain === 'ore') return this.map.oreAt(x, y) !== null;
     if (def.onTerrain === 'water') return this.adjacentWater(x, y); // 水泵：陆地且临水域
     if (def.onTerrain === 'oil') return this.map.isOil(x, y);
+    // 火车站 / 机务段：陆地非占格，且至少一侧紧邻轨道
+    if (def.railStation || def.railDepot) return this.adjacentRail(x, y) !== null;
     return true;
+  }
+
+  /** 该格四邻的轨道格（火车站/机务段须接轨；返回相邻轨格或 null） */
+  adjacentRail(x, y) {
+    for (const v of FG.Utils.dirs) {
+      const nx = x + v.x, ny = y + v.y;
+      const b = this.map.buildingAt(nx, ny);
+      if (b && (b.type === 'rail' || b.def.railStation)) return b;
+    }
+    return null;
   }
 
   /** 该格四邻是否有水域（水泵/供水预设校验用） */
@@ -295,8 +316,14 @@ FG.Game = class Game {
     if (!this.canPlace(this.ghost.type, x, y)) return false;
     const b = FG.Map.create(this.ghost.type, x, y, this.ghost.dir);
     if (b.type === 'miner') b.oreType = this.map.oreAt(x, y);
+    if (b.def.railStation) {
+      b.stationId = 'S' + (this.railway.stationSeq++);
+      b.stationName = '站点 ' + b.stationId.slice(1);
+    }
     this.map.register(b);
     this.sim.register(b);
+    // 轨网变更（轨道/车站接入）→ 下一 tick 重建路网图并重寻路
+    if (b.type === 'rail' || b.def.railStation) this.railway.markDirty();
     // 若该格有拆除时遗留的地面物料，优先回收进新建筑（在途物品不丢失）
     this.absorbPile(b);
     FG.Events.emit('building:placed', b);
@@ -319,7 +346,7 @@ FG.Game = class Game {
         // 进料物品按间距排开，避免叠在入口
         b.items.sort((a, c) => a.pos - c.pos);
         for (let k = b.items.length - 2; k >= 0; k--) b.items[k].pos = Math.min(b.items[k].pos, b.items[k + 1].pos - SP);
-      } else if (b.type === 'chest') {
+      } else if (b.def.storage) {
         left = this.tryChestAdd(b, s.type, left);
       } else if (b.slots) {
         FG.Map.syncRecipeSlots(b);
@@ -352,6 +379,14 @@ FG.Game = class Game {
   }
 
   removeBuilding(b) {
+    // 铁路保护：列车正占用的轨道/车站格不允许拆除（避免脱轨与存档不一致）
+    if (this.railway && (b.type === 'rail' || b.def.railStation)) {
+      const tid = this.railway.occupiedBy(b.x, b.y);
+      if (tid) {
+        this.logMsg('⚠ 无法拆除：' + tid + ' 号列车正占用该格，请先让列车驶离或解编该列车', 'error');
+        return false;
+      }
+    }
     // 物料保留：传送带上的在途物品、手中物品、槽位与箱子物料全部落到该格地面堆
     // 拆建即释放预留：落地前剥离在途预留标签，物料恢复为自由货物可被任何产线取用
     if (b.items) for (const it of b.items) this.map.pileAdd(b.x, b.y, it.type, 1);
@@ -363,8 +398,10 @@ FG.Game = class Game {
     }
     this.sim.unregister(b);
     this.map.unregister(b);
+    if (b.type === 'rail' || b.def.railStation) this.railway.markDirty();
     if (this.selection === b) this.selection = null;
     FG.Events.emit('building:removed', b);
+    return true;
   }
 
   setRecipe(b, rid) {
@@ -377,6 +414,17 @@ FG.Game = class Game {
   }
 
   selectBuilding(b) { this.selection = b; FG.Events.emit('selection:change', b); }
+
+  /** 解编当前选中的列车（车载货物落到其所在格地面堆，避免丢失） */
+  removeTrainSelection() {
+    const tr = this.selection;
+    if (!tr || !tr.isTrain) return;
+    for (const s of tr.cargo) this.map.pileAdd(tr.x, tr.y, s.type, s.count);
+    this.railway.removeTrain(tr);
+    this.selection = null;
+    this.logMsg('已解编列车 ' + tr.id + '：车上 ' + tr.cargoTotal() + ' 件货物已落到地面堆', 'info');
+    FG.Events.emit('selection:change');
+  }
 
   // ================= 蓝图施工 =================
   /** 切换蓝图模式：无 → 有剪贴板则放置、否则框选；放置 → 框选；框选 → 退出 */
@@ -553,6 +601,8 @@ FG.Game = class Game {
       }
     }
     for (const pile of this.map.piles.values()) for (const s of pile) add(s.type, s.count);
+    // 列车在途货物（运输中的货物随全局盘点可见）
+    if (this.railway) for (const tr of this.railway.trains) for (const s of tr.cargo) add(s.type, s.count);
     return counts;
   }
 

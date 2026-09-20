@@ -52,6 +52,7 @@ FG.Renderer = (() => {
     drawOre(x0, y0, x1, y1);
     drawGrid(x0, y0, x1, y1);
     drawBuildings(x0, y0, x1, y1);
+    drawTrains();
     drawConstruction();
     drawBlueprintSelect();
     drawBlueprintGhost();
@@ -138,6 +139,8 @@ FG.Renderer = (() => {
         if (b.def.beltTier !== undefined) {
           drawBelt(b, px, py, t);
           belts.push(b);
+        } else if (b.type === 'rail' || b.def.railStation) {
+          drawRailTile(b, px, py, t);
         } else {
           drawBuilding(b, px, py, t);
         }
@@ -186,6 +189,141 @@ FG.Renderer = (() => {
         drawItem(ctx, s.type, (x + 0.5) * t + ox, (y + 0.5) * t + oy, 9, 0.95);
       });
     }
+  }
+
+  // ==================== 铁路 ====================
+  /** 轨道/火车站格：按四邻接轨方向画枕木+双轨；车站叠加站台着色 */
+  function drawRailTile(b, px, py, t) {
+    const inWorld = !!(game && game.map && game.state === 'playing'
+      && game.map.inBounds(b.x, b.y) && game.map.buildingAt(b.x, b.y) === b);
+    // 底座（车站用站台色）
+    ctx.fillStyle = b.def.railStation ? '#3a3430' : '#232730';
+    ctx.fillRect(px + 1, py + 1, t - 2, t - 2);
+
+    const links = [];
+    if (inWorld) {
+      for (let d = 0; d < 4; d++) {
+        const v = FG.Utils.dirVec(d);
+        const nb = game.map.buildingAt(b.x + v.x, b.y + v.y);
+        if (nb && (nb.type === 'rail' || nb.def.railStation)) links.push(d);
+      }
+    }
+    // 图标/无邻格时按朝向画一段
+    if (!links.length) links.push(b.dir, (b.dir + 2) % 4);
+
+    // 枕木
+    ctx.strokeStyle = '#4a3f30';
+    ctx.lineWidth = 3;
+    for (const d of links) {
+      const v = FG.Utils.dirVec(d);
+      const cx = px + t / 2, cy = py + t / 2;
+      const tx0 = cx - v.x * t / 2, ty0 = cy - v.y * t / 2;
+      const tx1 = cx + v.x * t / 2, ty1 = cy + v.y * t / 2;
+      // 双轨（垂直于走向偏移）
+      for (const off of [-5, 5]) {
+        const nx = -v.y, ny = v.x;
+        ctx.strokeStyle = '#8b8378';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(tx0 + nx * off, ty0 + ny * off);
+        ctx.lineTo(tx1 + nx * off, ty1 + ny * off);
+        ctx.stroke();
+      }
+      // 两道枕木
+      ctx.strokeStyle = '#5a4d3a';
+      ctx.lineWidth = 2.4;
+      for (const f of [0.25, 0.7]) {
+        const lx = tx0 + (tx1 - tx0) * f, ly = ty0 + (ty1 - ty0) * f;
+        ctx.beginPath();
+        ctx.moveTo(lx - (-v.y) * 6, ly - v.x * 6);
+        ctx.lineTo(lx + (-v.y) * 6, ly + v.x * 6);
+        ctx.stroke();
+      }
+    }
+
+    if (b.def.railStation) {
+      // 站台边 + 站名
+      ctx.strokeStyle = '#e8b33d';
+      ctx.lineWidth = 1.4;
+      ctx.setLineDash([4, 3]);
+      ctx.strokeRect(px + 2.5, py + 2.5, t - 5, t - 5);
+      ctx.setLineDash([]);
+      ctx.fillStyle = '#e8b33d';
+      ctx.font = 'bold 8px Consolas';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('站', px + t / 2, py + t / 2);
+      ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+      if (inWorld) {
+        ctx.fillStyle = 'rgba(0,0,0,0.45)';
+        ctx.fillRect(px + 2, py + 2, 26, 8);
+        ctx.fillStyle = '#ffd97a';
+        ctx.font = '7px Consolas';
+        ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+        ctx.fillText((b.stationName || b.stationId || '站').slice(0, 5), px + 3, py + 2.5);
+        ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+      }
+      // 货位预览（与箱子一致）
+      const items = (b.chest || []).filter(s => s.count > 0);
+      if (items.length && inWorld) drawItem(ctx, items[0].type, px + t - 7, py + t - 7, 7, 1);
+    }
+  }
+
+  /** 列车：沿上一格→当前格插值平滑移动，按状态着色 */
+  function drawTrains() {
+    const ry = game.railway;
+    if (!ry || !ry.trains.length) return;
+    const t = T();
+    const moveTicks = FG.Config.TRAIN_MOVE_TICKS;
+    for (const tr of ry.trains) {
+      let wx = tr.x, wy = tr.y;
+      if (tr.moveTimer > 0) {
+        const k = 1 - tr.moveTimer / moveTicks;
+        wx = tr.px + (tr.x - tr.px) * k;
+        wy = tr.py + (tr.y - tr.py) * k;
+      }
+      const cx = (wx + 0.5) * t, cy = (wy + 0.5) * t;
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(Math.atan2(FG.Utils.dirVec(tr.dir).y, FG.Utils.dirVec(tr.dir).x));
+      // 车体（朝向 = +x 方向）
+      const col = { moving: '#4d9fd9', docked: '#58c26f', waiting: '#e8b33d', blocked: '#e05c5c', noroute: '#c060e0', paused: '#8b93a8', idle: '#9aa6bc' }[tr.state] || '#9aa6bc';
+      ctx.fillStyle = '#20262f';
+      roundRect(-13, -8, 26, 16, 3); ctx.fill();
+      ctx.fillStyle = col;
+      roundRect(-12, -7, 24, 14, 3); ctx.fill();
+      // 车头驾驶舱
+      ctx.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx.fillRect(6, -5, 5, 10);
+      // 车灯
+      ctx.fillStyle = '#ffe9a0';
+      ctx.fillRect(12, -5, 1.6, 3); ctx.fillRect(12, 2, 1.6, 3);
+      ctx.restore();
+      // 载货量徽标
+      const n = tr.cargoTotal();
+      ctx.fillStyle = 'rgba(0,0,0,0.55)';
+      ctx.beginPath(); ctx.arc(cx, cy - 12, 7, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#dfe6f0';
+      ctx.font = 'bold 8px Consolas';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(FG.Utils.fmtNum(n), cx, cy - 12);
+      ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
+      // 选中框
+      if (game.selection === tr) {
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(wx * t + 1, wy * t + 1, t - 2, t - 2);
+      }
+    }
+  }
+
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
   }
 
   function drawBelt(b, px, py, t) {
@@ -435,6 +573,26 @@ FG.Renderer = (() => {
         const first = items[0];
         drawItem(ctx, first.type, cx, cy + 4, 9, 1);
       }
+    } else if (type === 'trainDepot') {
+      // 机务段：车库厂房 + 车库门
+      ctx.fillStyle = '#3b4250';
+      ctx.fillRect(px + 3, py + 3, t - 6, t - 6);
+      ctx.fillStyle = '#4d5668';
+      ctx.fillRect(px + 5, py + 5, t - 10, t - 10);
+      ctx.fillStyle = '#23272f';
+      ctx.fillRect(cx - 7, cy - 7, 14, 10);
+      ctx.strokeStyle = '#e8b33d';
+      ctx.lineWidth = 1;
+      for (let i = -2; i <= 2; i++) {
+        ctx.beginPath(); ctx.moveTo(cx + i * 3, cy - 7); ctx.lineTo(cx + i * 3, cy + 3); ctx.stroke();
+      }
+      ctx.fillStyle = '#e8b33d';
+      ctx.fillRect(px + 5, py + 3, t - 10, 3);
+      ctx.fillStyle = '#ffd97a';
+      ctx.font = 'bold 7px Consolas';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText('务', cx, cy + 10);
+      ctx.textAlign = 'left'; ctx.textBaseline = 'alphabetic';
     }
 
     // 生产线供料优先级角标（非普通时显示）
@@ -604,6 +762,7 @@ FG.Renderer = (() => {
     ctx.globalAlpha = 0.5;
     const tmp = { def: FG.Buildings.byId(g.type), type: g.type, x, y, dir: g.dir, items: [], held: null, level: 0, fluidType: null, status: 'idle', slots: { inputs: {}, outputs: {} }, chest: [], rr: 0 };
     if (tmp.def.beltTier !== undefined) drawBelt(tmp, px, py, t);
+    else if (tmp.type === 'rail' || tmp.def.railStation) drawRailTile(tmp, px, py, t);
     else drawBuilding(tmp, px, py, t);
     ctx.globalAlpha = 1;
   }
@@ -720,6 +879,7 @@ FG.Renderer = (() => {
     c2.scale(scale, scale);
     c2.translate(0, 0);
     if (tmp.def.beltTier !== undefined) drawBelt(tmp, 0, 0, 32);
+    else if (tmp.type === 'rail' || tmp.def.railStation) drawRailTile(tmp, 0, 0, 32);
     else drawBuilding(tmp, 0, 0, 32);
     c2.restore();
     iconCache[k] = cv;

@@ -119,6 +119,26 @@ FG.Buildings = (() => {
       cost: { ironPlate: 2 },   // 蓝图施工建材
       unlockedBy: null, storage: true,
     },
+
+    // ================= 铁路 =================
+    rail: {
+      id: 'rail', name: '轨道', cat: 'logistics',
+      desc: '列车行驶的轨道。按住左键拖拽可连续铺设；线路可交叉，列车按区间占用依次通过。',
+      cost: { ironPlate: 1 },   // 蓝图施工建材
+      unlockedBy: 'railTransport', railTier: 0,
+    },
+    station: {
+      id: 'station', name: '火车站', cat: 'logistics',
+      desc: '建在轨道旁（至少一侧接轨）：列车按运输计划停靠装卸。货位与箱子相同，机械臂可直接与周围产线/传送带转运。',
+      cost: { ironPlate: 6, gear: 4 },   // 蓝图施工建材
+      unlockedBy: 'railTransport', storage: true, railStation: true,
+    },
+    trainDepot: {
+      id: 'trainDepot', name: '机务段', cat: 'logistics',
+      desc: '建在轨道旁，用于编组与派遣列车。选中后可向相邻轨道发车，并编辑该车的运输计划（站点与装卸规则）。',
+      cost: { ironPlate: 8, gear: 4, ironBeam: 2 },   // 蓝图施工建材
+      unlockedBy: 'railTransport', railDepot: true,
+    },
   };
 
   const byId = (id) => DEFS[id];
